@@ -142,6 +142,23 @@ button.chip:not(:disabled):hover{border-color:var(--muted)}
   .panel,.event .panel{margin-left:0}
 }
 @media (prefers-reduced-motion:reduce){.spin{animation:none}.toast{transition:none}}
+
+/* Notes page: a free-form scratchpad, separate from per-task notes */
+.notepad{display:grid;gap:8px}
+.notepad textarea{width:100%;min-height:52vh;border:1.5px solid var(--line);background:var(--paper);border-radius:14px;padding:18px;color:var(--ink);font:400 16px/1.6 var(--body);resize:vertical}
+.notepad textarea:focus{outline:none;border-color:var(--spruce)}
+.notepad .hint{margin:0}
+
+/* Sticky note: a small floating note you can drag around the page */
+.sticky{position:fixed;top:120px;right:32px;width:220px;background:#FFF3B0;color:#3A3316;border-radius:2px;box-shadow:0 10px 24px rgba(0,0,0,.22);transform:rotate(-2deg);z-index:50;font-family:var(--body)}
+@media (prefers-color-scheme:dark){.sticky{background:#4A4420;color:#F5EFC9}}
+.sticky-bar{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;cursor:grab;font-size:12.5px;font-weight:600;opacity:.75;user-select:none}
+.sticky-bar:active{cursor:grabbing}
+.sticky-x{background:none;border:0;font-size:17px;line-height:1;cursor:pointer;color:inherit;opacity:.6;padding:2px 4px}
+.sticky-x:hover{opacity:1}
+.sticky textarea{display:block;width:100%;min-height:150px;border:0;background:transparent;color:inherit;font:inherit;font-size:14.5px;line-height:1.5;padding:0 12px 12px;resize:vertical}
+.sticky textarea:focus{outline:none}
+@media (max-width:820px){.sticky{right:16px;top:auto;bottom:16px}}
 </style>
 </head>
 <body>
@@ -153,6 +170,7 @@ button.chip:not(:disabled):hover{border-color:var(--muted)}
     </div>
     <div class="syncbar">
       <span class="state" id="savedstate"></span>
+      <button class="btn" id="stickybtn" type="button">Sticky note</button>
       <button class="btn" id="importbtn" type="button">Import .ics</button>
       <button class="btn" id="exportbtn" type="button">Export .ics</button>
     </div>
@@ -179,6 +197,13 @@ button.chip:not(:disabled):hover{border-color:var(--muted)}
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="file" accept=".ics,text/calendar" hidden>
+<div class="sticky" id="sticky" hidden>
+  <div class="sticky-bar" id="stickyBar">
+    <span>Sticky note</span>
+    <button class="sticky-x" id="stickyClose" type="button" aria-label="Close sticky note">×</button>
+  </div>
+  <textarea id="stickyText" placeholder="Jot something down…" maxlength="1000"></textarea>
+</div>
 
 <script>
 (() => {
@@ -210,6 +235,16 @@ function saveTasks(tasks) {
   catch (e) { toast("Couldn't save — your browser's storage may be full or blocked.", true); }
 }
 let S = { tasks: loadTasks() };
+
+/* ---------- notepad (a separate, general scratchpad) ---------- */
+const NOTEPAD_KEY = 'paiva-notepad';
+function loadNotepad() { try { return localStorage.getItem(NOTEPAD_KEY) || ''; } catch (e) { return ''; } }
+function saveNotepad(text) { try { localStorage.setItem(NOTEPAD_KEY, text); } catch (e) {} }
+
+/* ---------- sticky note (a small floating note) ---------- */
+const STICKY_KEY = 'paiva-sticky';
+function loadSticky() { try { return JSON.parse(localStorage.getItem(STICKY_KEY) || 'null'); } catch (e) { return null; } }
+function saveSticky(data) { try { localStorage.setItem(STICKY_KEY, JSON.stringify(data)); } catch (e) {} }
 
 const dayLabel = s => s === today ? 'Today' : s === addDays(today,1) ? 'Tomorrow' : s === addDays(today,-1) ? 'Yesterday' : dayName(s);
 const dateOf = t => split(t.due).date;
@@ -441,6 +476,12 @@ function viewDone(D) {
   if (!D.done.length) return empty('Completed tasks show up here.');
   return `<div class="bar"><h2>Completed<span class="count">${D.done.length}</span></h2><button class="btn" data-clear type="button">Clear all</button></div>${list(D.done, t => taskRow(t, false))}`;
 }
+function viewNotes() {
+  return `<div class="notepad">
+    <p class="hint">A free page for anything that isn't a task — plans, links, things to remember. Saved automatically.</p>
+    <textarea id="notepadText" placeholder="Write anything here…"></textarea>
+  </div>`;
+}
 
 /* ---------- page chrome ---------- */
 function renderHero(D) {
@@ -466,9 +507,10 @@ function renderSaved() {
 }
 function renderTabs(D) {
   const tabs = [['today','Today', D.todayEvents.length + D.overdue.length + D.dueToday.length], ['todo','To-do', D.open.length],
-    ['schedule','Schedule', D.schedule.length], ['upcoming','Upcoming', D.upcoming.length], ['done','Done', D.done.length]];
+    ['schedule','Schedule', D.schedule.length], ['upcoming','Upcoming', D.upcoming.length], ['done','Done', D.done.length],
+    ['notes','Notes', null]];
   $('#tabs').innerHTML = tabs.map(([id, name, n]) =>
-    `<button class="tab" role="tab" data-view="${id}" aria-selected="${view === id}">${name}<span class="n">${n}</span></button>`).join('');
+    `<button class="tab" role="tab" data-view="${id}" aria-selected="${view === id}">${name}${n === null ? '' : `<span class="n">${n}</span>`}</button>`).join('');
 }
 function captureDraft() {
   const p = document.querySelector('.panel');
@@ -481,8 +523,13 @@ function render() {
   today = ymd(new Date());
   const D = derive();
   renderHero(D); renderSaved(); renderTabs(D);
-  const views = {today: viewToday, todo: viewTodo, schedule: viewSchedule, upcoming: viewUpcoming, done: viewDone};
+  const views = {today: viewToday, todo: viewTodo, schedule: viewSchedule, upcoming: viewUpcoming, done: viewDone, notes: viewNotes};
   $('#view').innerHTML = (views[view] || viewToday)(D);
+  if (view === 'notes') {
+    const ta = $('#notepadText');
+    ta.value = loadNotepad();
+    ta.addEventListener('input', () => saveNotepad(ta.value));
+  }
 }
 const closePanel = () => { openId = null; draft = null; };
 function act(fn) { try { fn(); render(); } catch (e) { toast(e.message, true); } }
@@ -539,9 +586,14 @@ $('#newDate').addEventListener('input', e => { $('#newTime').disabled = !e.targe
 $('#adder').addEventListener('submit', e => {
   e.preventDefault();
   try {
+    const before = new Set(S.tasks.map(t => t.id));
     addTask($('#newTitle').value, $('#newDate').value, $('#newTime').value);
+    const added = S.tasks.find(t => !before.has(t.id));
     $('#newTitle').value = ''; $('#newDate').value = ''; $('#newTime').value = ''; $('#newTime').disabled = true;
-    render(); $('#newTitle').focus();
+    if (added) { openId = added.id; draft = null; view = 'todo'; }   // jump to it and open its note pad
+    render();
+    const ta = document.querySelector('.panel textarea');
+    if (ta) ta.focus(); else $('#newTitle').focus();
   } catch (err) { toast(err.message, true); }
 });
 
@@ -562,6 +614,37 @@ $('#exportbtn').addEventListener('click', () => {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 });
+
+/* ---------- sticky note: show/hide, remember text and position, drag ---------- */
+(() => {
+  const box = $('#sticky'), text = $('#stickyText'), bar = $('#stickyBar');
+  const saved = loadSticky() || {};
+  text.value = saved.text || '';
+  if (saved.top != null) { box.style.top = saved.top + 'px'; box.style.right = 'auto'; box.style.left = saved.left + 'px'; }
+  const show = saved.open !== false && (saved.text || saved.open);
+  box.hidden = !show;
+  const persist = () => saveSticky({ text: text.value, open: !box.hidden, top: parseFloat(box.style.top) || undefined, left: parseFloat(box.style.left) || undefined });
+  text.addEventListener('input', persist);
+  $('#stickybtn').addEventListener('click', () => { box.hidden = !box.hidden; persist(); });
+  $('#stickyClose').addEventListener('click', () => { box.hidden = true; persist(); });
+
+  let dragging = null;
+  bar.addEventListener('pointerdown', e => {
+    if (e.target === $('#stickyClose')) return;
+    const r = box.getBoundingClientRect();
+    dragging = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const x = Math.min(Math.max(0, e.clientX - dragging.dx), window.innerWidth - box.offsetWidth);
+    const y = Math.min(Math.max(0, e.clientY - dragging.dy), window.innerHeight - box.offsetHeight);
+    box.style.left = x + 'px'; box.style.top = y + 'px'; box.style.right = 'auto';
+  });
+  const stopDrag = () => { if (dragging) { dragging = null; persist(); } };
+  bar.addEventListener('pointerup', stopDrag);
+  bar.addEventListener('pointercancel', stopDrag);
+})();
 
 render();
 })();
